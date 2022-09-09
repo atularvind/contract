@@ -19,13 +19,16 @@ class ContractContract(models.Model):
 
     def _prepare_sale(self, date_ref):
         self.ensure_one()
-        sale = self.env['sale.order'].new({
-            'partner_id': self.partner_id,
-            'date_order': fields.Date.to_string(date_ref),
-            'origin': self.name,
-            'company_id': self.company_id.id,
-            'user_id': self.partner_id.user_id.id,
-        })
+        sale = self.env["sale.order"].new(
+            {
+                "partner_id": self.partner_id,
+                "date_order": fields.Date.to_string(date_ref),
+                "origin": self.name,
+                "company_id": self.company_id.id,
+                "user_id": self.partner_id.user_id.id,
+                "analytic_account_id": self.group_id.id,
+            }
+        )
         if self.payment_term_id:
             sale.payment_term_id = self.payment_term_id.id
         if self.fiscal_position_id:
@@ -37,10 +40,11 @@ class ContractContract(models.Model):
 
     def _get_related_sales(self):
         self.ensure_one()
-        sales = (self.env['sale.order.line']
-                 .search([('contract_line_id', 'in',
-                           self.contract_line_ids.ids)
-                          ]).mapped('order_id'))
+        sales = (
+            self.env["sale.order.line"]
+            .search([("contract_line_id", "in", self.contract_line_ids.ids)])
+            .mapped("order_id")
+        )
         return sales
 
 
@@ -122,10 +126,14 @@ class ContractContract(models.Model):
 
     def _recurring_create_sale(self, date_ref=False):
         sales_values = self._prepare_recurring_sales_values(date_ref)
-        so_rec = self.env["sale.order"].create(sales_values)
-        for rec in self.filtered(lambda c: c.sale_autoconfirm):
-            so_rec.action_confirm()
-        return so_rec
+        sale_orders = self.env["sale.order"].create(sales_values)
+        sale_orders_to_confirm = sale_orders.filtered(
+            lambda sale: sale.contract_auto_confirm
+        )
+        sale_orders_to_confirm.action_confirm()
+        self._compute_recurring_next_date()
+        return sale_orders
+
 
     @api.model
     def cron_recurring_create_sale(self, date_ref=None):
@@ -149,8 +157,7 @@ class ContractContract(models.Model):
         if not date_ref:
             date_ref = fields.Date.context_today(self)
         domain = self._get_contracts_to_invoice_domain(date_ref)
-        domain.extend([('type', '=', 'invoice')])
-        invoices = self.env["account.invoice"]
+        invoices = self.env["account.move"]
         # Invoice by companies, so assignation emails get correct context
         companies_to_invoice = self.read_group(
             domain, ["company_id"], ["company_id"])
@@ -158,6 +165,5 @@ class ContractContract(models.Model):
             contracts_to_invoice = self.search(row["__domain"]).with_context(
                 allowed_company_ids=[row["company_id"][0]]
             )
-            invoices |= contracts_to_invoice._recurring_create_invoice(
-                date_ref)
+            invoices |= contracts_to_invoice._recurring_create_invoice(date_ref)
         return invoices
